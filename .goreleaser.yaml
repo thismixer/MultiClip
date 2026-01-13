@@ -23,7 +23,7 @@ aurs:
     maintainers:
       - "thismixer <thismixer@gmail.com>"
     license: MIT
-    private_key: "{{ .Env.AUR_KEY_PATH }}
+    private_key: "{{ .Env.AUR_KEY_PATH }}"
     git_url: "ssh://aur@aur.archlinux.org/mclip-bin.git"
     optdepends:
       - "wl-clipboard: For Wayland support"
