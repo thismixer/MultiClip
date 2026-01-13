@@ -11,9 +11,25 @@ brews:
     repository:
       owner: thismixer
       name: homebrew-tap
-    directory: Formula
     homepage: "https://github.com/thismixer/MultiClip"
-    description: "Clipboard sync between Mac and Arch"
+    description: "Clipboard sync between Mac and ArchLinux"
+    install: |
+      bin.install "mclip"
+
+aurs:
+  - name: mclip-bin
+    homepage: "https://github.com/thismixer/MultiClip"
+    description: "Clipboard sync between Mac and ArchLinux"
+    maintainers:
+      - "thismixer <thismixer@gmail.com>"
+    license: MIT
+    private_key: '{{ .Env.AUR_SSH_KEY }}'
+    git_url: "ssh://aur@aur.archlinux.org/mclip-bin.git"
+    optdepends:
+      - "wl-clipboard: For Wayland support"
+      - "xclip: For X11 support"
+    package: |-
+      install -Dm755 "./mclip" "${pkgdir}/usr/bin/mclip"
 
 builds:
   - env:
