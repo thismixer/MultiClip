@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
 
 	"github.com/grandcat/zeroconf"
 )
@@ -24,6 +25,8 @@ func Discover(ctx context.Context, onFound func(addr string)) {
 		log.Fatal(err)
 	}
 
+	localIPs := getLocalIPs()
+
 	entries := make(chan *zeroconf.ServiceEntry)
 	go func() {
 		err = resolver.Browse(ctx, "_multiclip._tcp", "local.", entries)
@@ -33,9 +36,34 @@ func Discover(ctx context.Context, onFound func(addr string)) {
 	}()
 
 	for entry := range entries {
-		if len(entry.AddrIPv4) > 0 {
-			addr := fmt.Sprintf("%s:%d", entry.AddrIPv4[0], entry.Port)
+		for _, ip := range entry.AddrIPv4 {
+			if isLocal(ip.String(), localIPs) {
+				continue
+			}
+			addr := fmt.Sprintf("%s:%d", ip, entry.Port)
 			onFound(addr)
 		}
 	}
+}
+
+func getLocalIPs() []string {
+	var ips []string
+	addrs, _ := net.InterfaceAddrs()
+	for _, a := range addrs {
+		if ipnet, ok := a.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
+			if ipnet.IP.To4() != nil {
+				ips = append(ips, ipnet.IP.String())
+			}
+		}
+	}
+	return ips
+}
+
+func isLocal(ip string, localIPs []string) bool {
+	for _, localIP := range localIPs {
+		if ip == localIP {
+			return true
+		}
+	}
+	return false
 }
