@@ -6,6 +6,15 @@ before:
   hooks:
     - go mod tidy
 
+brews:
+  - name: mclip
+    repository:
+      owner: thismixer
+      name: homebrew-tap
+    directory: Formula
+    homepage: "https://github.com/thismixer/MultiClip"
+    description: "Clipboard sync between Mac and Arch"
+
 builds:
   - env:
       - CGO_ENABLED=0
