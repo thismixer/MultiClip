@@ -1,8 +1,11 @@
 package main
 
 import (
+	"context"
 	"fmt"
-	"log"
+	"os"
+	"os/signal"
+	"time"
 
 	"github.com/thismixer/MultiClip/internal/clipboard"
 )
@@ -10,15 +13,25 @@ import (
 func main() {
 	cb := clipboard.New()
 
-	text, err := cb.GetText()
-	if err != nil {
-		log.Fatal(err)
-	}
-	fmt.Printf("буфер: %s\n", text)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
 
-	err = cb.SetText("test")
-	if err != nil {
-		log.Fatal(err)
+	fmt.Println("MultiClip запущен")
+
+	lastText, _ := cb.GetText()
+
+	for {
+		select {
+		case <-ctx.Done():
+			fmt.Println("\nВыключение")
+			return
+		default:
+			currentText, err := cb.GetText()
+			if err == nil && currentText != lastText && currentText != "" {
+				lastText = currentText
+				fmt.Printf("Скопировано: %s\n", currentText)
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
 	}
-	fmt.Println("буфер изменен")
 }
