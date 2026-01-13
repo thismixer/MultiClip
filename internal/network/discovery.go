@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"time"
 
 	"github.com/grandcat/zeroconf"
 )
@@ -20,31 +21,42 @@ func Advertise(ctx context.Context, port int) {
 }
 
 func Discover(ctx context.Context, onFound func(addr string)) {
-	resolver, err := zeroconf.NewResolver(nil)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	localIPs := getLocalIPs()
-	fmt.Printf("Локальные IP: %v\n", localIPs)
-
+	resolver, _ := zeroconf.NewResolver(nil)
 	entries := make(chan *zeroconf.ServiceEntry)
 	go func() {
-		err = resolver.Browse(ctx, "_multiclip._tcp", "local.", entries)
-		if err != nil {
-			log.Fatal(err)
+		resolver.Browse(ctx, "_multiclip._tcp", "local.", entries)
+	}()
+
+	go func() {
+		for entry := range entries {
+			for _, ip := range entry.AddrIPv4 {
+				onFound(fmt.Sprintf("%s:%d", ip, entry.Port))
+			}
 		}
 	}()
 
-	for entry := range entries {
-		for _, ip := range entry.AddrIPv4 {
-			ipStr := ip.String()
-			if isLocal(ipStr, localIPs) {
-				continue
-			}
-			addr := fmt.Sprintf("%s:%d", ipStr, entry.Port)
-			onFound(addr)
+	localIPs := getLocalIPs()
+	for _, ip := range localIPs {
+		go scanSubnet(ip, onFound)
+	}
+}
+
+func scanSubnet(myIP string, onFound func(string)) {
+	mask := net.ParseIP(myIP).To4()
+	base := fmt.Sprintf("%d.%d.%d.", mask[0], mask[1], mask[2])
+
+	for i := 1; i < 255; i++ {
+		target := fmt.Sprintf("%s%d", base, i)
+		if target == myIP {
+			continue
 		}
+		go func(addr string) {
+			conn, err := net.DialTimeout("tcp", addr+":8080", 500*time.Millisecond)
+			if err == nil {
+				conn.Close()
+				onFound(addr + ":8080")
+			}
+		}(target)
 	}
 }
 
