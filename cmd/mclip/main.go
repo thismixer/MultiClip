@@ -35,7 +35,10 @@ func main() {
 		mu.Lock()
 		lastText = text
 		mu.Unlock()
-		fmt.Printf("Получен текст: %s\n", limitString(text, 50))
+
+		fmt.Println("Получен текст: ")
+		os.Stdout.Write([]byte(limitString(text, 50)))
+		fmt.Println()
 	}, func(imgData []byte) {
 		mu.Lock()
 		lastImageHash = md5.Sum(imgData)
@@ -69,7 +72,11 @@ func main() {
 			currentText, errText := cb.GetText()
 			if errText == nil && currentText != lastText && currentText != "" {
 				lastText = currentText
-				fmt.Printf("Отправка текста: %s\n", limitString(currentText, 50))
+
+				fmt.Println("Отправка текста: ")
+				os.Stdout.Write([]byte(limitString(currentText, 50)))
+				fmt.Println()
+
 				broadcast(&remotes, currentText, nil)
 			}
 			mu.Unlock()
@@ -89,10 +96,16 @@ func broadcast(remotes *sync.Map, text string, img []byte) {
 	remotes.Range(func(key, value any) bool {
 		addr := key.(string)
 		go func(address string) {
+			var err error
 			if text != "" {
-				_ = network.SendText(address, text)
+				err = network.SendText(address, text)
 			} else if len(img) > 0 {
-				_ = network.SendImage(address, img)
+				err = network.SendImage(address, img)
+			}
+
+			if err != nil {
+				remotes.Delete(address)
+				fmt.Printf("[-] Устройство %s отключилось\n", address)
 			}
 		}(addr)
 		return true

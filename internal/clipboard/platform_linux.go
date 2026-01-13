@@ -32,11 +32,13 @@ func (l *linuxClipboard) GetText() (string, error) {
 		cmd = exec.CommandContext(ctx, "xclip", "-selection", "clipboard", "-o")
 	}
 
+	cmd.Env = append(os.Environ(), "LANG=en_US.UTF-8", "LC_ALL=en_US.UTF-8")
+
 	out, err := cmd.Output()
 	if err != nil {
 		return "", err
 	}
-	return string(out), nil
+	return string(bytes.TrimSpace(out)), nil
 }
 
 func (l *linuxClipboard) SetText(text string) error {
@@ -49,6 +51,8 @@ func (l *linuxClipboard) SetText(text string) error {
 	} else {
 		cmd = exec.CommandContext(ctx, "xclip", "-selection", "clipboard")
 	}
+
+	cmd.Env = append(os.Environ(), "LANG=en_US.UTF-8", "LC_ALL=en_US.UTF-8")
 	cmd.Stdin = strings.NewReader(text)
 	return cmd.Run()
 }
