@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/thismixer/MultiClip/internal/clipboard"
+	"github.com/thismixer/MultiClip/internal/network"
 )
 
 func main() {
@@ -16,9 +17,23 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
-	fmt.Println("MultiClip запущен")
+	var remoteAddr string
 
-	lastText, _ := cb.GetText()
+	if len(os.Args) > 1 {
+		remoteAddr = os.Args[1]
+	} else {
+		fmt.Print("Введи айпи второго устройства: ")
+		fmt.Scanln(&remoteAddr)
+	}
+
+	fmt.Printf("MultiClip запущен. \nСвязь с: %s\n", remoteAddr)
+
+	var lastText string
+
+	go network.StartServer(cb, "8080", func(text string) {
+		lastText = text
+		fmt.Printf("Получено: %s\n", text)
+	})
 
 	for {
 		select {
@@ -30,6 +45,7 @@ func main() {
 			if err == nil && currentText != lastText && currentText != "" {
 				lastText = currentText
 				fmt.Printf("Скопировано: %s\n", currentText)
+				go network.SendText(remoteAddr, currentText)
 			}
 			time.Sleep(500 * time.Millisecond)
 		}
