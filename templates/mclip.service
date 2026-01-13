@@ -1,0 +1,10 @@
+[Unit]
+Description=MultiClip Sync Service
+After=network.target
+
+[Service]
+ExecStart={{.Executable}}
+Restart=always
+
+[Install]
+WantedBy=default.target
