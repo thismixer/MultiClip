@@ -3,84 +3,91 @@ package network
 import (
 	"context"
 	"fmt"
-	"log"
 	"net"
+	"strings"
 	"time"
-
-	"github.com/grandcat/zeroconf"
 )
 
 func Advertise(ctx context.Context, port int) {
-	server, err := zeroconf.Register("MultiClip-Device", "_multiclip._tcp", "local.", port, []string{"txtv=0", "lo=1"}, nil)
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	message := []byte(fmt.Sprintf("MCLIP_PEER:%d", port))
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			ifaces, _ := net.Interfaces()
+			for _, iface := range ifaces {
+				if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+					continue
+				}
+
+				addrs, _ := iface.Addrs()
+				for _, addr := range addrs {
+					ipnet, ok := addr.(*net.IPNet)
+					if !ok || ipnet.IP.To4() == nil {
+						continue
+					}
+
+					localAddr := &net.UDPAddr{IP: ipnet.IP, Port: 0}
+					remoteAddr, _ := net.ResolveUDPAddr("udp", "255.255.255.255:9999")
+
+					conn, err := net.DialUDP("udp", localAddr, remoteAddr)
+					if err == nil {
+						_, _ = conn.Write(message)
+						conn.Close()
+					}
+				}
+			}
+		}
+	}
+}
+
+func Discover(ctx context.Context, onPeerFound func(string)) {
+	myIPs := make(map[string]bool)
+	ifaces, _ := net.Interfaces()
+	for _, iface := range ifaces {
+		addrs, _ := iface.Addrs()
+		for _, a := range addrs {
+			if ipnet, ok := a.(*net.IPNet); ok {
+				myIPs[ipnet.IP.String()] = true
+			}
+		}
+	}
+
+	addr, _ := net.ResolveUDPAddr("udp", ":9999")
+	conn, err := net.ListenUDP("udp", addr)
 	if err != nil {
-		log.Fatal(err)
+		fmt.Printf("Ошибка прослушивания UDP: %v\n", err)
+		return
 	}
-	defer server.Shutdown()
+	defer conn.Close()
 
-	<-ctx.Done()
-}
-
-func Discover(ctx context.Context, onFound func(addr string)) {
-	resolver, _ := zeroconf.NewResolver(nil)
-	entries := make(chan *zeroconf.ServiceEntry)
-	go func() {
-		resolver.Browse(ctx, "_multiclip._tcp", "local.", entries)
-	}()
-
-	go func() {
-		for entry := range entries {
-			for _, ip := range entry.AddrIPv4 {
-				onFound(fmt.Sprintf("%s:%d", ip, entry.Port))
+	buffer := make([]byte, 1024)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+			_ = conn.SetReadDeadline(time.Now().Add(1 * time.Second))
+			n, remoteAddr, err := conn.ReadFromUDP(buffer)
+			if err != nil {
+				continue
 			}
-		}
-	}()
 
-	localIPs := getLocalIPs()
-	for _, ip := range localIPs {
-		go scanSubnet(ip, onFound)
-	}
-}
-
-func scanSubnet(myIP string, onFound func(string)) {
-	mask := net.ParseIP(myIP).To4()
-	base := fmt.Sprintf("%d.%d.%d.", mask[0], mask[1], mask[2])
-
-	for i := 1; i < 255; i++ {
-		target := fmt.Sprintf("%s%d", base, i)
-		if target == myIP {
-			continue
-		}
-		go func(addr string) {
-			conn, err := net.DialTimeout("tcp", addr+":8080", 500*time.Millisecond)
-			if err == nil {
-				conn.Close()
-				onFound(addr + ":8080")
+			if myIPs[remoteAddr.IP.String()] {
+				continue
 			}
-		}(target)
-	}
-}
 
-func getLocalIPs() []string {
-	var ips []string
-	addrs, err := net.InterfaceAddrs()
-	if err != nil {
-		return ips
-	}
-	for _, a := range addrs {
-		if ipnet, ok := a.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
-			if ipnet.IP.To4() != nil {
-				ips = append(ips, ipnet.IP.String())
+			msg := string(buffer[:n])
+			if strings.HasPrefix(msg, "MCLIP_PEER:") {
+				peerPort := strings.TrimPrefix(msg, "MCLIP_PEER:")
+				peerFullAddr := net.JoinHostPort(remoteAddr.IP.String(), peerPort)
+				onPeerFound(peerFullAddr)
 			}
 		}
 	}
-	return ips
-}
-
-func isLocal(ip string, localIPs []string) bool {
-	for _, localIP := range localIPs {
-		if ip == localIP {
-			return true
-		}
-	}
-	return false
 }
