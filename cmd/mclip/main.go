@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"text/template"
 	"time"
@@ -62,9 +63,49 @@ func main() {
 	runApp(*verbose)
 }
 
+func updateStateFile() {
+	home, _ := os.UserHomeDir()
+	stateFile := filepath.Join(home, ".mclip_devices")
+
+	var ips []string
+	activePeers.Range(func(key, value any) bool {
+		ips = append(ips, key.(string))
+		return true
+	})
+
+	content := strings.Join(ips, "\n")
+	os.WriteFile(stateFile, []byte(content), 0644)
+}
+
+func showDevices() {
+	home, _ := os.UserHomeDir()
+	stateFile := filepath.Join(home, ".mclip_devices")
+
+	cmd := exec.Command("pgrep", "-f", os.Args[0])
+	if err := cmd.Run(); err != nil {
+		fmt.Println("[-] MultiClip сейчас не запущен.")
+		os.Remove(stateFile)
+		return
+	}
+
+	data, err := os.ReadFile(stateFile)
+	if err != nil || len(bytes.TrimSpace(data)) == 0 {
+		fmt.Println("[!] MultiClip запущен, но активных устройств пока нет.")
+		return
+	}
+
+	fmt.Println("Подключенные устройства:")
+	devices := strings.Split(strings.TrimSpace(string(data)), "\n")
+	for i, ip := range devices {
+		fmt.Printf("%d. %s\n", i+1, ip)
+	}
+	fmt.Println("")
+}
+
 func uninstallService() {
 	home, _ := os.UserHomeDir()
 	var targetPath string
+	stateFile := filepath.Join(home, ".mclip_devices")
 
 	switch runtime.GOOS {
 	case "darwin":
@@ -75,29 +116,120 @@ func uninstallService() {
 		exec.Command("systemctl", "--user", "disable", "mclip", "--now").Run()
 	}
 
-	if err := os.Remove(targetPath); err != nil {
-		fmt.Printf("[-] Не удалось удалить файл (возможно, его нет): %v\n", err)
-	} else {
-		fmt.Println("[+] Программа удалена из автозагрузки.")
+	os.Remove(targetPath)
+	os.Remove(stateFile)
+	fmt.Println("[+] Программа полностью удалена из системы.")
+}
+
+func runApp(isVerbose bool) {
+	cb := clipboard.New()
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
+
+	var (
+		lastText      string
+		lastImageHash [16]byte
+		mu            sync.Mutex
+	)
+
+	addPeer := func(addr string) {
+		if _, loaded := activePeers.LoadOrStore(addr, time.Now()); !loaded {
+			updateStateFile()
+			if isVerbose {
+				fmt.Printf("[+] Подключено: %s\n", addr)
+			}
+		}
+	}
+
+	go network.StartServer(cb, "8080", func(text string) {
+		mu.Lock()
+		lastText = text
+		mu.Unlock()
+	}, func(imgData []byte) {
+		mu.Lock()
+		lastImageHash = md5.Sum(imgData)
+		mu.Unlock()
+	}, addPeer)
+
+	go network.Advertise(ctx, 8080)
+	go network.Discover(ctx, addPeer)
+
+	for {
+		select {
+		case <-ctx.Done():
+			home, _ := os.UserHomeDir()
+			os.Remove(filepath.Join(home, ".mclip_devices"))
+			return
+		default:
+			time.Sleep(1000 * time.Millisecond)
+			mu.Lock()
+
+			currentImg, errImg := cb.GetImage()
+			if errImg == nil && len(currentImg) > 0 {
+				currentHash := md5.Sum(currentImg)
+				if currentHash != lastImageHash {
+					lastImageHash = currentHash
+					broadcast(&activePeers, "", currentImg, isVerbose)
+				}
+			}
+
+			currentText, errText := cb.GetText()
+			if errText == nil && currentText != lastText && currentText != "" {
+				lastText = currentText
+				broadcast(&activePeers, currentText, nil, isVerbose)
+			}
+			mu.Unlock()
+		}
 	}
 }
 
-func showDevices() {
-	cmd := exec.Command("pgrep", "-f", os.Args[0])
-	output, err := cmd.Output()
-	if err != nil {
-		fmt.Println("[-] MultiClip сейчас не запущен.")
-	} else {
-		fmt.Printf("[+] MultiClip работает (PID: %s). \n[!] Для просмотра активных соединений в реальном времени используйте: mclip -v\n", bytes.TrimSpace(output))
+func startDaemon() {
+	cmd := exec.Command(os.Args[0], "-v")
+	cmd.Env = append(os.Environ(), "MCLIP_DAEMON=1")
+	cmd.Start()
+	fmt.Printf("[+] MultiClip запущен в фоне (PID: %d)\n", cmd.Process.Pid)
+	os.Exit(0)
+}
+
+func stopDaemon() {
+	home, _ := os.UserHomeDir()
+	exec.Command("pkill", "-f", os.Args[0]).Run()
+	os.Remove(filepath.Join(home, ".mclip_devices"))
+	fmt.Println("[!] MultiClip остановлен.")
+}
+
+func limitString(s string, n int) string {
+	runes := []rune(s)
+	if len(runes) > n {
+		return string(runes[:n]) + "..."
 	}
+	return string(runes)
+}
+
+func broadcast(remotes *sync.Map, text string, img []byte, isVerbose bool) {
+	remotes.Range(func(key, value any) bool {
+		addr := key.(string)
+		go func(address string) {
+			var err error
+			if text != "" {
+				err = network.SendText(address, text)
+			} else {
+				err = network.SendImage(address, img)
+			}
+			if err != nil {
+				remotes.Delete(address)
+				updateStateFile()
+				if isVerbose {
+					fmt.Printf("[-] Отключился: %s\n", address)
+				}
+			}
+		}(addr)
+		return true
+	})
 }
 
 func installService() {
 	executable, _ := os.Executable()
-	if filepath.Base(executable) == "main" || filepath.Ext(executable) == ".tmp" {
-		fmt.Println("[!] Внимание: вы устанавливаете временный бинарник. Рекомендуется сначала сделать 'go build'.")
-	}
-
 	home, _ := os.UserHomeDir()
 	data := struct{ Executable string }{Executable: executable}
 	var targetPath string
@@ -127,111 +259,4 @@ func installService() {
 		exec.Command("systemctl", "--user", "enable", "mclip", "--now").Run()
 	}
 	fmt.Printf("[+] Успешно установлено в %s\n", targetPath)
-}
-
-func runApp(isVerbose bool) {
-	cb := clipboard.New()
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer cancel()
-
-	var (
-		lastText      string
-		lastImageHash [16]byte
-		mu            sync.Mutex
-	)
-
-	addPeer := func(addr string) {
-		if _, loaded := activePeers.LoadOrStore(addr, time.Now()); !loaded {
-			if isVerbose {
-				fmt.Printf("[+] Подключено устройство: %s\n", addr)
-			}
-		}
-	}
-
-	go network.StartServer(cb, "8080", func(text string) {
-		mu.Lock()
-		lastText = text
-		mu.Unlock()
-		if isVerbose {
-			fmt.Printf("<- Текст: %s\n", limitString(text, 50))
-		}
-	}, func(imgData []byte) {
-		mu.Lock()
-		lastImageHash = md5.Sum(imgData)
-		mu.Unlock()
-		if isVerbose {
-			fmt.Println("<- Изображение получено")
-		}
-	}, addPeer)
-
-	go network.Advertise(ctx, 8080)
-	go network.Discover(ctx, addPeer)
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-			time.Sleep(1000 * time.Millisecond)
-			mu.Lock()
-
-			currentImg, errImg := cb.GetImage()
-			if errImg == nil && len(currentImg) > 0 {
-				currentHash := md5.Sum(currentImg)
-				if currentHash != lastImageHash {
-					lastImageHash = currentHash
-					broadcast(&activePeers, "", currentImg, isVerbose)
-				}
-			}
-
-			currentText, errText := cb.GetText()
-			if errText == nil && currentText != lastText && currentText != "" {
-				lastText = currentText
-				broadcast(&activePeers, currentText, nil, isVerbose)
-			}
-			mu.Unlock()
-		}
-	}
-}
-
-func startDaemon() {
-	cmd := exec.Command(os.Args[0], "-v")
-	cmd.Env = append(os.Environ(), "MCLIP_DAEMON=1")
-	cmd.Start()
-	fmt.Printf("[+] MultiClip ушел в фон (PID: %d)\n", cmd.Process.Pid)
-	os.Exit(0)
-}
-
-func stopDaemon() {
-	exec.Command("pkill", "-f", os.Args[0]).Run()
-	fmt.Println("[!] Все процессы MultiClip остановлены.")
-}
-
-func limitString(s string, n int) string {
-	runes := []rune(s)
-	if len(runes) > n {
-		return string(runes[:n]) + "..."
-	}
-	return string(runes)
-}
-
-func broadcast(remotes *sync.Map, text string, img []byte, isVerbose bool) {
-	remotes.Range(func(key, value any) bool {
-		addr := key.(string)
-		go func(address string) {
-			var err error
-			if text != "" {
-				err = network.SendText(address, text)
-			} else {
-				err = network.SendImage(address, img)
-			}
-			if err != nil {
-				remotes.Delete(address)
-				if isVerbose {
-					fmt.Printf("[-] Устройство %s отключилось\n", address)
-				}
-			}
-		}(addr)
-		return true
-	})
 }
