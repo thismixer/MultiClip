@@ -21,7 +21,7 @@ func main() {
 	var lastText string
 	var remotes sync.Map
 
-	fmt.Println("MultiClip запущен (автопоиск)")
+	fmt.Println("MultiClip запущен")
 
 	go network.StartServer(cb, "8080", func(text string) {
 		lastText = text

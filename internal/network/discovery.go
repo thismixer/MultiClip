@@ -26,6 +26,7 @@ func Discover(ctx context.Context, onFound func(addr string)) {
 	}
 
 	localIPs := getLocalIPs()
+	fmt.Printf("Локальные IP: %v\n", localIPs)
 
 	entries := make(chan *zeroconf.ServiceEntry)
 	go func() {
@@ -37,10 +38,11 @@ func Discover(ctx context.Context, onFound func(addr string)) {
 
 	for entry := range entries {
 		for _, ip := range entry.AddrIPv4 {
-			if isLocal(ip.String(), localIPs) {
+			ipStr := ip.String()
+			if isLocal(ipStr, localIPs) {
 				continue
 			}
-			addr := fmt.Sprintf("%s:%d", ip, entry.Port)
+			addr := fmt.Sprintf("%s:%d", ipStr, entry.Port)
 			onFound(addr)
 		}
 	}
@@ -48,7 +50,10 @@ func Discover(ctx context.Context, onFound func(addr string)) {
 
 func getLocalIPs() []string {
 	var ips []string
-	addrs, _ := net.InterfaceAddrs()
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return ips
+	}
 	for _, a := range addrs {
 		if ipnet, ok := a.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
 			if ipnet.IP.To4() != nil {
