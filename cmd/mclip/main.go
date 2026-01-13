@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"sync"
 	"time"
 
 	"github.com/thismixer/MultiClip/internal/clipboard"
@@ -17,22 +18,22 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
-	var remoteAddr string
-
-	if len(os.Args) > 1 {
-		remoteAddr = os.Args[1]
-	} else {
-		fmt.Print("Введи айпи второго устройства: ")
-		fmt.Scanln(&remoteAddr)
-	}
-
-	fmt.Printf("MultiClip запущен. \nСвязь с: %s\n", remoteAddr)
-
 	var lastText string
+	var remotes sync.Map
+
+	fmt.Println("MultiClip запущен (автопоиск)")
 
 	go network.StartServer(cb, "8080", func(text string) {
 		lastText = text
 		fmt.Printf("Получено: %s\n", text)
+	})
+
+	go network.Advertise(ctx, 8080)
+
+	go network.Discover(ctx, func(addr string) {
+		if _, loaded := remotes.LoadOrStore(addr, true); !loaded {
+			fmt.Printf("Найдено устройство: %s\n", addr)
+		}
 	})
 
 	for {
@@ -45,7 +46,12 @@ func main() {
 			if err == nil && currentText != lastText && currentText != "" {
 				lastText = currentText
 				fmt.Printf("Скопировано: %s\n", currentText)
-				go network.SendText(remoteAddr, currentText)
+
+				remotes.Range(func(key, value any) bool {
+					addr := key.(string)
+					go network.SendText(addr, currentText)
+					return true
+				})
 			}
 			time.Sleep(500 * time.Millisecond)
 		}
