@@ -5,7 +5,6 @@
 ## Установка
 
 ### Arch Linux
-Используйте ваш любимый AUR-helper:
 ```bash
 yay -S mclip-bin
 ```
